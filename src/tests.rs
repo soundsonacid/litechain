@@ -1,6 +1,12 @@
 use crate::{
     db::AccountsDB,
-    structures::{UserAccount, Transaction}, ValidatorsAccount
+    structures::{
+        Account, 
+        TransferTransaction, 
+        Transaction,
+        UserAccount,
+        ValidatorAccount,
+    }
 };
 
 fn setup_accounts(db: &AccountsDB) -> (UserAccount, UserAccount) {
@@ -9,6 +15,14 @@ fn setup_accounts(db: &AccountsDB) -> (UserAccount, UserAccount) {
     db.add_account(account1.public_key, account1.clone());
     db.add_account(account2.public_key, account2.clone());
     (account1, account2)
+}
+
+fn setup_validators(db: &AccountsDB) -> (ValidatorAccount, ValidatorAccount) {
+    let validator1 = ValidatorAccount::new();
+    let validator2 = ValidatorAccount::new();
+    db.add_validator(validator1.public_key, validator1.clone());
+    db.add_validator(validator2.public_key, validator2.clone());
+    (validator1, validator2)
 }
 
 #[test]
@@ -39,10 +53,18 @@ fn test_transaction_validation() {
 
     let _ = db.increase_account_balance(&account1.public_key, 1000);
 
-    let mut tx = Transaction::new(account2.public_key, account1.public_key, 500, account1.nonce);
-    account1.sign_transaction(&mut tx);
+    let mut tx = TransferTransaction::new(account2.public_key, account1.public_key, 500, account1.nonce);
 
-    assert!(tx.validate(&db), "Transaction should be valid");
+    tx.sign(&Account::UserAccount(account1));
+
+    assert!(tx.validate(&db)); 
 }
 
+#[test]
+fn test_validator_creation() {
+    let db = AccountsDB::new();
+    let (validator1, validator2) = setup_validators(&db);
 
+    assert!(db.is_validator(&validator1.public_key), "Validator 1 should exist");
+    assert!(db.is_validator(&validator2.public_key), "Validator 2 should exist");
+}

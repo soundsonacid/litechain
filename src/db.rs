@@ -1,10 +1,10 @@
 use dashmap::DashMap;
-use crate::{structures::{Pubkey, UserAccount, Blockhash}, ValidatorsAccount};
+use crate::structures::{Account, Pubkey, UserAccount, Blockhash, ValidatorAccount};
 
 pub struct AccountsDB {
     latest_blockhash: Blockhash,
     accounts: DashMap<Pubkey, UserAccount>,
-    validators: ValidatorsAccount,
+    validators: DashMap<Pubkey, ValidatorAccount>,
 }
    
 impl AccountsDB {
@@ -12,7 +12,7 @@ impl AccountsDB {
         Self {
             latest_blockhash: Blockhash::default(),
             accounts: DashMap::new(),
-            validators: ValidatorsAccount::new(),
+            validators: DashMap::new(),
         }
     }
 
@@ -46,11 +46,24 @@ impl AccountsDB {
         }
     }
 
-    pub fn add_validator(&mut self, validator: &Pubkey) {
-        self.validators.validators.insert(*validator);
+    pub fn add_validator(&self, pubkey: Pubkey, validator: ValidatorAccount) {
+        self.validators.insert(pubkey, validator);
     }
 
-    pub fn is_validator(&self, validator: &Pubkey) -> bool {
-        self.validators.validators.contains(validator)
+    pub fn is_validator(&self, pubkey: &Pubkey) -> bool {
+        self.validators.contains_key(pubkey)
+    }
+
+    pub fn get_validator(&self, pubkey: &Pubkey) -> Option<ValidatorAccount> {
+        self.validators.get(pubkey).map(|val| val.clone())
+    }
+
+    pub fn increase_validator_stake(&self, pubkey: &Pubkey, amt: u64) -> Result<(), &'static str> {
+        if let Some(mut validator) = self.validators.get_mut(pubkey) {
+            validator.stake = validator.stake.saturating_add(amt);
+            Ok(())
+        } else {
+            Err("Validator not found.")
+        }
     }
 }

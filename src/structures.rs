@@ -1,7 +1,4 @@
-use std::{
-    collections::HashSet,
-    time::SystemTime
-};
+use std::time::SystemTime;
 
 use ed25519_dalek::{
     Keypair, 
@@ -10,7 +7,7 @@ use ed25519_dalek::{
     SECRET_KEY_LENGTH, 
     SecretKey,
     Signature, 
-    Signer,
+    Signer as DalekSigner,
     Verifier
 };
 use hex;
@@ -29,18 +26,84 @@ const DEFAULT_SIGNATURE_BYTES: [u8; Signature::BYTE_SIZE] = [0; Signature::BYTE_
 // Enums defining types of accounts & transactions
 pub enum Account {
     UserAccount(UserAccount),
-    ValidatorsAccount(ValidatorsAccount),
+    ValidatorAccount(ValidatorAccount),
+}
+
+pub trait Signer {
+    fn public_key(&self) -> &Pubkey;
+    fn secret_key(&self) -> &Pubkey;
+}
+
+impl Signer for Account {
+    fn public_key(&self) -> &Pubkey {
+        match self {
+            Account::UserAccount(user) => user.public_key(),
+            Account::ValidatorAccount(validator) => validator.public_key(),
+        }
+    }
+
+    fn secret_key(&self) -> &Pubkey {
+        match self {
+            Account::UserAccount(user) => user.secret_key(),
+            Account::ValidatorAccount(validator) => validator.secret_key(),
+        }
+    }
+}
+
+pub enum Transactions {
+    Stake(StakeTransaction),
+    Transfer(TransferTransaction),
+}
+
+impl TransactionSerialize for Transactions {
+    fn serialize(&self) -> Vec<u8> {
+        match self {
+            Transactions::Stake(tx) => tx.serialize(),
+            Transactions::Transfer(tx) => tx.serialize(),
+        }
+    }
+}
+
+pub trait TransactionSerialize {
+    fn serialize(&self) -> Vec<u8>;
+}
+
+pub trait Transaction: TransactionSerialize {
+    fn get_signature(&self) -> &Signature;
+    fn get_mut_signature(&mut self) -> &mut Signature;
+
+    fn sign(&mut self, signer: &Account) {
+        let keypair = Keypair {
+            public: PublicKey::from_bytes(signer.public_key()).expect("Invalid public key"),
+            secret: SecretKey::from_bytes(signer.secret_key()).expect("Invalid secret key"),
+        };
+
+        let tx_data = self.serialize();
+        let sig = keypair.sign(&tx_data);
+
+        *self.get_mut_signature() = sig;
+    }
+
+    fn verify_signature(&self, signer: &Account) -> bool {
+        let public_key = PublicKey::from_bytes(signer.public_key()).expect("Invalid public key");
+        let tx_data = self.serialize();
+
+        match public_key.verify(&tx_data, self.get_signature()) {
+            Ok(_) => true,
+            Err(_) => false,
+        }
+    }
 }
 
 pub struct Block {
-    transactions: Vec<Transaction>,
+    transactions: Vec<Transactions>,
     hash: Blockhash,
     prev_hash: Blockhash,
     timestamp: SystemTime,
 }
 
 impl Block {
-    pub fn new(transactions: Vec<Transaction>, prev_hash: Blockhash) -> Self {
+    pub fn new(transactions: Vec<Transactions>, prev_hash: Blockhash) -> Self {
         // Create new Block with placeholder for the hash
         let mut block = Block {
             transactions,
@@ -110,7 +173,7 @@ impl UserAccount {
         }
     }
 
-    pub fn sign_transaction(&self, transaction: &mut Transaction) {
+    pub fn sign_transaction(&self, transaction: &mut TransferTransaction) {
         let keypair = Keypair {
             public: PublicKey::from_bytes(&self.public_key).expect("Invalid public key"),
             secret: SecretKey::from_bytes(&self.secret_key).expect("Invalid secret key")
@@ -123,20 +186,113 @@ impl UserAccount {
         transaction.signature = sig;
     }
 }
-#[derive(Default, Debug, Clone)]
-pub struct ValidatorsAccount {
-    pub validators: HashSet<Pubkey>,
+
+impl Signer for UserAccount {
+    fn public_key(&self) -> &Pubkey {
+        &self.public_key
+    }
+
+    fn secret_key(&self) -> &Pubkey {
+        &self.secret_key
+    }
 }
 
-impl ValidatorsAccount {
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct ValidatorAccount {
+    pub address: String,
+    pub public_key: Pubkey,
+    pub stake: u64,
+    secret_key: Seckey,
+}
+
+impl ValidatorAccount {
     pub fn new() -> Self {
-        Self {
-            validators: HashSet::new(),
+        let mut csprng = OsRng;
+        let keypair = Keypair::generate(&mut csprng);
+
+        let public_key: Pubkey = keypair.public.to_bytes();
+        let secret_key: Seckey = keypair.secret.to_bytes();
+
+        let address = hex::encode(&public_key);
+
+        ValidatorAccount {
+            address,
+            public_key,
+            stake: 0,
+            secret_key,
         }
     }
 }
 
-pub struct Transaction {
+impl Signer for ValidatorAccount {
+    fn public_key(&self) -> &Pubkey {
+        &self.public_key
+    }
+
+    fn secret_key(&self) -> &Pubkey {
+        &self.secret_key
+    }
+}
+
+pub struct StakeTransaction {
+    pub validator: Pubkey,
+    pub staker: Pubkey,
+    pub amt: u64,
+    nonce: u64,
+    signature: Signature
+}
+
+impl StakeTransaction {
+    pub fn new(validator: Pubkey, staker: Pubkey, amt: u64, nonce: u64) -> Self {
+        StakeTransaction {
+            validator,
+            staker,
+            amt,
+            nonce,
+            signature: Signature::from_bytes(&DEFAULT_SIGNATURE_BYTES).unwrap()
+        }
+    }
+
+    pub fn validate(&self, db: &AccountsDB) -> bool {
+        // Make sure `validator`` is a validator
+        if !db.is_validator(&self.validator) {
+            return false
+        }
+
+        let staker = match db.get_account(&self.staker) {
+            Some(account) => account,
+            None => return false,
+        };
+
+        // if !self.ve
+        true
+    }
+}
+
+impl Transaction for StakeTransaction {
+    fn get_signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn get_mut_signature(&mut self) -> &mut Signature {
+        &mut self.signature
+    }
+}
+
+impl TransactionSerialize for StakeTransaction {
+    fn serialize(&self) -> Vec<u8> {
+        let mut data = vec![];
+
+        data.extend(&self.validator.to_vec());
+        data.extend(&self.staker.to_vec());
+        data.extend(&self.nonce.to_le_bytes());
+        data.extend(&self.amt.to_le_bytes());
+
+        data
+    }
+}
+
+pub struct TransferTransaction {
     pub to: Pubkey,
     pub from: Pubkey,
     pub amt: u64,
@@ -144,27 +300,15 @@ pub struct Transaction {
     signature: Signature,
 }
 
-impl Transaction {
+impl TransferTransaction {
     pub fn new(to: Pubkey, from: Pubkey, amt: u64, nonce: u64) -> Self {
-        Transaction {
+        TransferTransaction {
             to,
             from,
             amt,
             nonce,
             signature: Signature::from_bytes(&DEFAULT_SIGNATURE_BYTES).unwrap(),
         }
-    }
-    // To sign a transaction we need to first serialize it into a Vec<u8>
-    // The nonce ensures that signatures won't be replicated and that we can tell two otherwise identical tx apart
-    pub fn serialize(&self) -> Vec<u8> {
-        let mut data = vec![];
-
-        data.extend(&self.to.to_vec());
-        data.extend(&self.from.to_vec());
-        data.extend(&self.nonce.to_le_bytes());
-        data.extend(&self.amt.to_le_bytes());
-
-        data
     }
 
     pub fn validate(&self, db: &AccountsDB) -> bool {
@@ -180,7 +324,7 @@ impl Transaction {
         };
 
         // Now we'll go ahead and make sure that the `from` account is actually the signer 
-        if !self.verify_signature(&from) {
+        if !self.verify_signature(&Account::UserAccount(from.clone())) {
             return false;
         }
 
@@ -192,16 +336,27 @@ impl Transaction {
         // Now we can say that for our purposes, the transaction is valid (`from` has balance gte amt & tx is signed by `from`)
         true
     }
+}
 
-    pub fn verify_signature(&self, from: &UserAccount) -> bool {
-        let public_key = PublicKey::from_bytes(&from.public_key).expect("Invalid public key");
+impl Transaction for TransferTransaction {
+    fn get_signature(&self) -> &Signature {
+        &self.signature
+    }
 
-        let tx_data = self.serialize();
+    fn get_mut_signature(&mut self) -> &mut Signature {
+        &mut self.signature
+    }
+}
 
-        // We will "re-sign" the transaction to make sure that the signature matches our public key
-        match public_key.verify(&tx_data, &self.signature) {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+impl TransactionSerialize for TransferTransaction {
+    fn serialize(&self) -> Vec<u8> {
+        let mut data = vec![];
+
+        data.extend(&self.to.to_vec());
+        data.extend(&self.from.to_vec());
+        data.extend(&self.nonce.to_le_bytes());
+        data.extend(&self.amt.to_le_bytes());
+
+        data
     }
 }
