@@ -2,11 +2,13 @@ use crate::{
     db::AccountsDB,
     structures::{
         Account, 
-        TransferTransaction, 
+        StakeTransaction,
         Transaction,
+        TransferTransaction, 
+        TransactionSign,
         UserAccount,
         ValidatorAccount,
-    }
+    }, pool::Mempool
 };
 
 fn setup_accounts(db: &AccountsDB) -> (UserAccount, UserAccount) {
@@ -47,7 +49,7 @@ fn test_account_balance() {
 }
 
 #[test]
-fn test_transaction_validation() {
+fn test_transfer_transaction_validation() {
     let db = AccountsDB::new();
     let (account1, account2) = setup_accounts(&db);
 
@@ -67,4 +69,39 @@ fn test_validator_creation() {
 
     assert!(db.is_validator(&validator1.public_key), "Validator 1 should exist");
     assert!(db.is_validator(&validator2.public_key), "Validator 2 should exist");
+}
+
+#[test]
+fn test_stake_transaction_validation() {
+    let db = AccountsDB::new();
+    let validator1 = setup_validators(&db).0;
+    let account1 = setup_accounts(&db).0;
+
+    let _ = db.increase_account_balance(&account1.public_key, 1000);
+
+    let mut tx = StakeTransaction::new(validator1.public_key, account1.public_key, 500, account1.nonce);
+
+    tx.sign(&Account::UserAccount(account1));
+
+    assert!(tx.validate(&db));
+}
+
+#[test]
+fn test_send_transaction() {
+    let mempool = Mempool::new();
+    let db = AccountsDB::new();
+
+    let (account1, account2) = setup_accounts(&db);
+
+    let _ = db.increase_account_balance(&account1.public_key, 1000);
+
+    let mut tx = TransferTransaction::new(account2.public_key, account1.public_key, 500, account1.nonce);
+
+    tx.sign(&Account::UserAccount(account1));
+
+    assert!(tx.validate(&db), "Transaction validation failed");
+
+    let sig = mempool.send_transaction(Transaction::Transfer(tx));
+
+    assert!(sig.is_ok(), "Transaction send failed");
 }

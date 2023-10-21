@@ -1,7 +1,6 @@
 mod db;
-mod pow;
 mod structures;
-mod chain;
+mod pool;
 mod tests;
 
 pub use structures::*;
