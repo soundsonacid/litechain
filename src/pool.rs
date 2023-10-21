@@ -1,9 +1,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::DashMap;
-use crate::{structures::{Transaction}, AccountsDB, Pubkey, TransactionSign};
+use crate::structures::{Transaction, Pubkey, TransactionSign};
 
-const MAX_TRANSACTIONS_PER_BLOCK: usize = 3;
+const MAX_TRANSACTIONS_PER_BLOCK: usize = 2;
 
+#[derive(Default, Debug)]
 pub struct Mempool {
     pool: DashMap<u64, Transaction>,
     counter: AtomicU64,
@@ -21,9 +22,9 @@ impl Mempool {
         let signer: Pubkey = tx.get_signer();
 
         if !tx.verify_signature(&signer) {
-           return Err("Validator not found.")
+           return Err("Signature invalid.")
         }
-        
+
         let id = self.counter.fetch_add(1, Ordering::SeqCst);
         self.pool.insert(id, tx);
         Ok(id)

@@ -1,10 +1,11 @@
 use dashmap::DashMap;
 use crate::structures::{Account, Pubkey, UserAccount, Blockhash, ValidatorAccount};
 
+#[derive(Default, Debug, Clone)]
 pub struct AccountsDB {
-    latest_blockhash: Blockhash,
-    accounts: DashMap<Pubkey, UserAccount>,
-    validators: DashMap<Pubkey, ValidatorAccount>,
+    pub latest_blockhash: Blockhash,
+    pub accounts: DashMap<Pubkey, UserAccount>,
+    pub validators: DashMap<Pubkey, ValidatorAccount>,
 }
    
 impl AccountsDB {

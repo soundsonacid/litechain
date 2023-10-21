@@ -1,4 +1,7 @@
-use std::time::SystemTime;
+use std::{
+    time::SystemTime,
+    sync::{Arc, RwLock}
+};
 
 use ed25519_dalek::{
     Keypair, 
@@ -14,7 +17,11 @@ use hex;
 use rand::rngs::OsRng;
 use sha2::{Sha256, Digest};
 
-use crate::AccountsDB;
+use crate::{
+    builder::BlockBuilder,
+    db::AccountsDB,
+    pool::Mempool
+};
 
 // Primitives for accounts / blocks / transactions
 pub type Blockhash = [u8; 32];
@@ -51,7 +58,7 @@ impl Signer for Account {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Transaction {
     Stake(StakeTransaction),
     Transfer(TransferTransaction),
@@ -80,9 +87,14 @@ impl TransactionSign for Transaction {
             Transaction::Transfer(tx) => &mut tx.signature
         }
     }
-}
 
-impl TransactionSerialize for Transaction {
+    fn validate(&self, db: &AccountsDB) -> bool {
+        match self {
+            Transaction::Stake(tx) => tx.validate(db),
+            Transaction::Transfer(tx) => tx.validate(db),
+        }
+    }
+
     fn serialize(&self) -> Vec<u8> {
         match self {
             Transaction::Stake(tx) => tx.serialize(),
@@ -91,13 +103,12 @@ impl TransactionSerialize for Transaction {
     }
 }
 
-pub trait TransactionSerialize {
-    fn serialize(&self) -> Vec<u8>;
-}
 
-pub trait TransactionSign: TransactionSerialize {
+pub trait TransactionSign {
     fn get_signature(&self) -> &Signature;
     fn get_mut_signature(&mut self) -> &mut Signature;
+    fn validate(&self, db: &AccountsDB) -> bool;
+    fn serialize(&self) -> Vec<u8>;
 
     fn sign(&mut self, signer: &Account) {
         let keypair = Keypair {
@@ -123,9 +134,9 @@ pub trait TransactionSign: TransactionSerialize {
 }
 
 pub struct Block {
-    transactions: Vec<Transaction>,
-    hash: Blockhash,
-    prev_hash: Blockhash,
+    pub transactions: Vec<Transaction>,
+    pub hash: Blockhash,
+    pub prev_hash: Blockhash,
     timestamp: SystemTime,
 }
 
@@ -140,6 +151,15 @@ impl Block {
         // Derive the hash for the new block
         block.hash = block.get_hash(prev_hash);
         block
+    }
+
+    pub fn create_genesis() -> Self {
+        Self {
+            transactions: vec![],
+            hash: [1; 32],
+            prev_hash: [1; 32],
+            timestamp: SystemTime::now(),
+        }
     }
 
     pub fn get_hash(&self, prev_hash: Blockhash) -> Blockhash {
@@ -223,16 +243,17 @@ impl Signer for UserAccount {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone)]
 pub struct ValidatorAccount {
     pub address: Address,
     pub public_key: Pubkey,
     pub stake: u64,
+    pub builder: BlockBuilder,
     secret_key: Seckey,
 }
 
 impl ValidatorAccount {
-    pub fn new() -> Self {
+    pub fn new(builder: BlockBuilder) -> Self {
         let mut csprng = OsRng;
         let keypair = Keypair::generate(&mut csprng);
 
@@ -245,6 +266,7 @@ impl ValidatorAccount {
             address,
             public_key,
             stake: 0,
+            builder,
             secret_key,
         }
     }
@@ -260,7 +282,7 @@ impl Signer for ValidatorAccount {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StakeTransaction {
     pub validator: Pubkey,
     pub staker: Pubkey,
@@ -279,8 +301,18 @@ impl StakeTransaction {
             signature: Signature::from_bytes(&DEFAULT_SIGNATURE_BYTES).unwrap()
         }
     }
+}
 
-    pub fn validate(&self, db: &AccountsDB) -> bool {
+impl TransactionSign for StakeTransaction {
+    fn get_signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn get_mut_signature(&mut self) -> &mut Signature {
+        &mut self.signature
+    }
+
+    fn validate(&self, db: &AccountsDB) -> bool {
         // Make sure `validator`` is a validator
         if !db.is_validator(&self.validator) {
             return false
@@ -301,19 +333,7 @@ impl StakeTransaction {
 
         true
     }
-}
 
-impl TransactionSign for StakeTransaction {
-    fn get_signature(&self) -> &Signature {
-        &self.signature
-    }
-
-    fn get_mut_signature(&mut self) -> &mut Signature {
-        &mut self.signature
-    }
-}
-
-impl TransactionSerialize for StakeTransaction {
     fn serialize(&self) -> Vec<u8> {
         let mut data = vec![];
 
@@ -326,7 +346,7 @@ impl TransactionSerialize for StakeTransaction {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TransferTransaction {
     pub to: Pubkey,
     pub from: Pubkey,
@@ -345,8 +365,29 @@ impl TransferTransaction {
             signature: Signature::from_bytes(&DEFAULT_SIGNATURE_BYTES).unwrap(),
         }
     }
+}
 
-    pub fn validate(&self, db: &AccountsDB) -> bool {
+impl TransactionSign for TransferTransaction {
+    fn get_signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn get_mut_signature(&mut self) -> &mut Signature {
+        &mut self.signature
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        let mut data = vec![];
+
+        data.extend(&self.to.to_vec());
+        data.extend(&self.from.to_vec());
+        data.extend(&self.nonce.to_le_bytes());
+        data.extend(&self.amt.to_le_bytes());
+
+        data
+    }
+
+    fn validate(&self, db: &AccountsDB) -> bool {
         // First we'll make sure that `to` and `from` actually exist
         let from = match db.get_account(&self.from) {
             Some(account) => account,
@@ -373,25 +414,3 @@ impl TransferTransaction {
     }
 }
 
-impl TransactionSign for TransferTransaction {
-    fn get_signature(&self) -> &Signature {
-        &self.signature
-    }
-
-    fn get_mut_signature(&mut self) -> &mut Signature {
-        &mut self.signature
-    }
-}
-
-impl TransactionSerialize for TransferTransaction {
-    fn serialize(&self) -> Vec<u8> {
-        let mut data = vec![];
-
-        data.extend(&self.to.to_vec());
-        data.extend(&self.from.to_vec());
-        data.extend(&self.nonce.to_le_bytes());
-        data.extend(&self.amt.to_le_bytes());
-
-        data
-    }
-}
