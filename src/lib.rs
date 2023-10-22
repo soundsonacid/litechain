@@ -6,4 +6,4 @@ mod tests;
 
 pub use db::AccountsDB;
 pub use structures::*;
-pub use pool::Mempool;
+pub use pool::{Mempool, MAX_TRANSACTIONS_PER_BLOCK};

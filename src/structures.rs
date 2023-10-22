@@ -1,6 +1,6 @@
 use std::{
-    time::SystemTime,
-    sync::{Arc, RwLock}
+    thread,
+    time::{Duration, SystemTime},
 };
 
 use ed25519_dalek::{
@@ -20,7 +20,6 @@ use sha2::{Sha256, Digest};
 use crate::{
     builder::BlockBuilder,
     db::AccountsDB,
-    pool::Mempool
 };
 
 // Primitives for accounts / blocks / transactions
@@ -58,7 +57,7 @@ impl Signer for Account {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Transaction {
     Stake(StakeTransaction),
     Transfer(TransferTransaction),
@@ -101,14 +100,21 @@ impl TransactionSign for Transaction {
             Transaction::Transfer(tx) => tx.serialize(),
         }
     }
-}
 
+    fn execute(&self, db: &mut AccountsDB) -> Result<(), &'static str> {
+        match self {
+            Transaction::Stake(tx) => tx.execute(db),
+            Transaction::Transfer(tx) => tx.execute(db),
+        }
+    }
+}
 
 pub trait TransactionSign {
     fn get_signature(&self) -> &Signature;
     fn get_mut_signature(&mut self) -> &mut Signature;
     fn validate(&self, db: &AccountsDB) -> bool;
     fn serialize(&self) -> Vec<u8>;
+    fn execute(&self, db: &mut AccountsDB) -> Result<(), &'static str>;
 
     fn sign(&mut self, signer: &Account) {
         let keypair = Keypair {
@@ -249,6 +255,7 @@ pub struct ValidatorAccount {
     pub public_key: Pubkey,
     pub stake: u64,
     pub builder: BlockBuilder,
+    last_finalized_hash: Blockhash,
     secret_key: Seckey,
 }
 
@@ -267,9 +274,68 @@ impl ValidatorAccount {
             public_key,
             stake: 0,
             builder,
+            last_finalized_hash: [1; 32], // Genesis blockhash
             secret_key,
         }
     }
+
+    pub fn start(&self, interval: Duration) -> Result<(), &'static str> {
+        loop {
+            thread::sleep(interval);
+    
+            let leader = self.builder.get_leader();
+            if leader.public_key == self.public_key {
+                match self.builder.build(self.last_finalized_hash) {
+                    Ok(proposed_block) => {
+
+                        if proposed_block.hash == [1; 32] {
+                            println!("Shutting down validator as no more transactions are in the mempool.");
+                            break Ok(());
+                        }
+
+                        let db_lock = self.builder.db.read().unwrap();
+                        let min_votes = db_lock.validators.len() / 2 + 1;  
+                        let votes = db_lock.validators.iter()
+                            .filter(|validator| validator.vote(&proposed_block))
+                            .count();
+    
+                        drop(db_lock);
+    
+                        if votes >= min_votes {
+                            let mut db_lock = self.builder.db.write().unwrap();
+                            db_lock.finalize_block(&proposed_block)?;
+                            
+                            let mempool_lock = self.builder.mempool.write().unwrap();
+
+                            for tx_in_block in &proposed_block.transactions {
+                                mempool_lock.pool.retain(|_, tx_in_mempool| tx_in_mempool != tx_in_block);
+                            }
+
+
+                            println!("Block {:?} finalized", proposed_block.hash);
+
+                            for mut entry in db_lock.validators.iter_mut() {
+                                let validator = entry.value_mut();
+                                validator.update_last_finalized_hash(proposed_block.hash);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("An error occurred: {:?}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn vote(&self, block: &Block) -> bool {
+        self.builder.validate_block(block).is_ok()
+    }
+
+    pub fn update_last_finalized_hash(&mut self, new_hash: Blockhash) {
+        self.last_finalized_hash = new_hash;
+    }
+
 }
 
 impl Signer for ValidatorAccount {
@@ -282,7 +348,7 @@ impl Signer for ValidatorAccount {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StakeTransaction {
     pub validator: Pubkey,
     pub staker: Pubkey,
@@ -344,9 +410,31 @@ impl TransactionSign for StakeTransaction {
 
         data
     }
+
+    fn execute(&self, db: &mut AccountsDB) -> Result<(), &'static str> {
+        if !self.validate(&db) {
+            return Err("Invalid transaction in Stake execute")
+        }
+
+        // If a transaction has gotten this far we can assume that the accounts are in the db
+        let staker = db.get_account(&self.staker).unwrap();
+
+        if staker.balance.lt(&self.amt) {
+            return Err("Staker balance less than amount")
+        }
+
+        db.decrease_account_balance(&self.staker, self.amt)
+            .map_err(|_| "Balance decrease failed")?;
+
+
+        db.increase_validator_stake(&self.validator, self.amt)
+            .map_err(|_| "Stake increase failed")?;
+
+        Ok(())
+    }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransferTransaction {
     pub to: Pubkey,
     pub from: Pubkey,
@@ -411,6 +499,27 @@ impl TransactionSign for TransferTransaction {
 
         // Now we can say that for our purposes, the transaction is valid (`from` has balance gte amt & tx is signed by `from`)
         true
+    }
+
+    fn execute(&self, db: &mut AccountsDB) -> Result<(), &'static str> {
+        if !self.validate(&db) {
+            return Err("Invalid transaction in Transfer execute")
+        }
+
+        // If a transaction has gotten this far we can assume that the accounts are in the db
+        let from = db.get_account(&self.from).unwrap();
+
+        if from.balance.lt(&self.amt) {
+            return Err("Staker balance less than amount")
+        }
+
+        db.decrease_account_balance(&self.from, self.amt)
+            .map_err(|_| "Balance decrease failed")?;
+        
+        db.increase_account_balance(&self.to, self.amt)
+            .map_err(|_| "Balance decrease failed")?;
+
+        Ok(())
     }
 }
 

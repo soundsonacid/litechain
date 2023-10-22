@@ -1,14 +1,14 @@
 use std::sync::{Arc, RwLock};
 use crate::{
     db::AccountsDB,
-    structures::{Block, Blockhash, Pubkey, ValidatorAccount},
-    pool::Mempool, TransactionSign,
+    structures::{Block, Blockhash, Pubkey, ValidatorAccount, TransactionSign},
+    pool::{Mempool, MAX_TRANSACTIONS_PER_BLOCK},
 };
 
 #[derive(Default, Debug, Clone)]
 pub struct BlockBuilder {
-    mempool: Arc<RwLock<Mempool>>,
-    db: Arc<RwLock<AccountsDB>>,
+    pub mempool: Arc<RwLock<Mempool>>,
+    pub db: Arc<RwLock<AccountsDB>>,
 }
 
 impl BlockBuilder {
@@ -25,24 +25,29 @@ impl BlockBuilder {
         let mempool_lock = self.mempool.read().unwrap();
         let db_lock = self.db.read().unwrap();
 
-        let transactions = mempool_lock.get_transactions_for_block();
+        if mempool_lock.pool.len() >= MAX_TRANSACTIONS_PER_BLOCK {
+            let transactions = mempool_lock.get_transactions_for_block();
 
-        for tx in &transactions {
-            let signer: Pubkey = tx.get_signer();
-            if !tx.verify_signature(&signer) {
-                return Err("Invalid transaction signature");
+            for tx in &transactions {
+                let signer: Pubkey = tx.get_signer();
+                if !tx.verify_signature(&signer) {
+                    return Err("Invalid transaction signature");
+                }
+                if !tx.validate(&*db_lock) {
+                    return Err("Invalid transaction in block building");
+                }
             }
-            if !tx.validate(&*db_lock) {
-                return Err("Invalid transaction");
-            }
+    
+            let block = Block::new(transactions, prev_hash);
+    
+            Ok(block)
+
+        } else {
+            Ok(self.build_genesis())
         }
-
-        let block = Block::new(transactions, prev_hash);
-
-        Ok(block)
     }
 
-    fn get_leader(&self) -> ValidatorAccount {
+    pub fn get_leader(&self) -> ValidatorAccount {
         let db_lock = self.db.read().unwrap();
         db_lock.validators
             .iter()
@@ -60,7 +65,7 @@ impl BlockBuilder {
                 return Err("Invalid transaction signature");
             }
             if !tx.validate(&*db_lock) {
-                return Err("Invalid transaction");
+                return Err("Invalid transaction in block validation");
             }
         }
         

@@ -1,6 +1,8 @@
 use std::{
     mem::drop,
-    sync::{Arc, RwLock}
+    sync::{Arc, RwLock}, 
+    thread,
+    time::Duration
 };
 
 use crate::{
@@ -143,7 +145,7 @@ fn test_build_block() {
     stake_tx.sign(&Account::UserAccount(account1.clone()));
 
     let signed_transfer_tx = Transaction::Transfer(transfer_tx.clone());
-    let signed_stake_tx = Transaction::Stake(stake_tx.clone());
+    let signed_stake_tx: Transaction = Transaction::Stake(stake_tx.clone());
 
     let transfer_sig = mempool_lock.send_transaction(signed_transfer_tx.clone());
     let stake_sig = mempool_lock.send_transaction(signed_stake_tx.clone());
@@ -162,4 +164,69 @@ fn test_build_block() {
     assert!(block.transactions.contains(&signed_stake_tx), "Block should contain the stake transaction");
 
     assert!(validator1.builder.validate_block(&block).is_ok(), "New block should be valid");
+}
+
+#[test]
+fn test_run_blockchain() {
+    let (validator1, validator2, db, mempool) = setup_validators();
+    let db_lock = db.write().unwrap();
+    let mempool_lock = mempool.write().unwrap();
+
+    let (account1, account2) = setup_accounts(&db_lock);
+
+    let genesis_block = validator1.builder.build_genesis();
+
+    assert!(genesis_block.transactions.is_empty(), "Genesis block should have no transactions");
+    assert_eq!(genesis_block.hash, [1; 32], "Genesis block hash should be predefined");
+
+    let _ = db_lock.increase_account_balance(&account1.public_key, 10000);
+    let _ = db_lock.increase_account_balance(&account2.public_key, 10000);
+
+    let mut transfer_tx1 = TransferTransaction::new(account2.public_key, account1.public_key, 1500, account1.nonce);
+    let mut transfer_tx2 = TransferTransaction::new(account1.public_key, account2.public_key, 2000, account2.nonce);
+
+    let mut stake_tx1 = StakeTransaction::new(validator1.public_key, account1.public_key, 500, account1.nonce);
+    let mut stake_tx2 = StakeTransaction::new(validator2.public_key, account2.public_key, 750, account2.nonce);
+
+    transfer_tx1.sign(&Account::UserAccount(account1.clone()));
+    transfer_tx2.sign(&Account::UserAccount(account2.clone()));
+
+    stake_tx1.sign(&Account::UserAccount(account1.clone()));
+    stake_tx2.sign(&Account::UserAccount(account2.clone()));
+
+    let signed_transfer1 = Transaction::Transfer(transfer_tx1);
+    let signed_transfer2 = Transaction::Transfer(transfer_tx2);
+
+    let signed_stake1 = Transaction::Stake(stake_tx1);
+    let signed_stake2 = Transaction::Stake(stake_tx2);
+
+    let transfer1_sig = mempool_lock.send_transaction(signed_transfer1);
+    let transfer2_sig = mempool_lock.send_transaction(signed_transfer2);
+
+    assert!(transfer1_sig.is_ok(), "Transfer 1 send failed.");
+    assert!(transfer2_sig.is_ok(), "Transfer 2 send failed.");
+
+    let stake1_sig = mempool_lock.send_transaction(signed_stake1);
+    let stake2_sig = mempool_lock.send_transaction(signed_stake2);
+
+    assert!(stake1_sig.is_ok(), "Stake 1 send failed.");
+    assert!(stake2_sig.is_ok(), "Stake 2 send failed.");
+
+    drop(db_lock);
+    drop(mempool_lock);
+
+    let validator1_handle = thread::spawn(move || {
+        let _ = validator1.start(Duration::from_millis(100));
+    });
+
+    let validator2_handle = thread::spawn(move || {
+        let _ = validator2.start(Duration::from_millis(100));
+    });
+
+    validator1_handle.join().unwrap();
+    validator2_handle.join().unwrap();
+    
+    let mempool_lock = mempool.read().unwrap();
+
+    assert_eq!(mempool_lock.pool.len(), 0, "Leftover transactions in mempool");
 }

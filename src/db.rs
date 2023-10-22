@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use crate::structures::{Account, Pubkey, UserAccount, Blockhash, ValidatorAccount};
+use crate::{structures::{Block, Pubkey, UserAccount, Blockhash, ValidatorAccount}, TransactionSign};
 
 #[derive(Default, Debug, Clone)]
 pub struct AccountsDB {
@@ -66,5 +66,14 @@ impl AccountsDB {
         } else {
             Err("Validator not found.")
         }
+    }
+
+    pub fn finalize_block(&mut self, block: &Block) -> Result<(), &'static str> {
+        for tx in &block.transactions {
+            if tx.execute(self).is_err() {
+                return Err("Failed to execute transaction")
+            }
+        }
+        Ok(())
     }
 }

@@ -2,11 +2,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::DashMap;
 use crate::structures::{Transaction, Pubkey, TransactionSign};
 
-const MAX_TRANSACTIONS_PER_BLOCK: usize = 2;
+pub const MAX_TRANSACTIONS_PER_BLOCK: usize = 2;
 
 #[derive(Default, Debug)]
 pub struct Mempool {
-    pool: DashMap<u64, Transaction>,
+    pub pool: DashMap<u64, Transaction>,
     counter: AtomicU64,
 }
 
@@ -34,8 +34,14 @@ impl Mempool {
         self.pool.get(id).map(|tx| tx.clone())
     }
 
-    pub fn cancel_transaction(&self, id: &u64) {
+    pub fn remove_transaction(&self, id: &u64) {
         self.pool.remove(id);
+    }
+
+    pub fn remove_transactions(&mut self, transactions: &[u64]) {
+        for tx in transactions {
+            self.pool.remove(tx);
+        }
     }
 
     pub fn get_transactions_for_block(&self) -> Vec<Transaction> {
